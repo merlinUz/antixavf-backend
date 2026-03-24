@@ -4,3 +4,4 @@ pyrogram
 aiohttp
 thefuzz
 pydantic
+requests
