@@ -1,0 +1,23 @@
+name: Avtomatik Deploy (CI/CD)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Serverga ulanish, kodni va kutubxonalarni yangilash
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /home/ubuntu/antixavf-backend
+            git pull origin main
+            source venv/bin/activate
+            pip install fastapi uvicorn pyrogram thefuzz requests pydantic
+            sudo systemctl restart antixavf
