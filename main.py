@@ -1,9 +1,11 @@
 import os
+import time
 import requests
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pyrogram import Client
+from pyrogram.enums import ChatType
 from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid
 from thefuzz import fuzz
 
@@ -24,12 +26,9 @@ app.add_middleware(
 API_ID = 33769072 
 API_HASH = "ecb69f2f2e5511fe1b4a695448094c69" 
 
-# BARCHA TAQIQLANGAN KANALLAR (TELEGRAM + YOUTUBE BIRLASHGAN RO'YXATI)
-# Oliy Sudning 2026-yil 6-aprel holatidagi qarori asosida 100% to'liq ro'yxat
+# BARCHA TAQIQLANGAN KANALLAR
 BANNED_NAMES = [
-    # ==========================================
-    # 🔵 TELEGRAM KANALLAR RO'YXATI (850 dan ortiq)
-    # ==========================================
+    # 🔵 TELEGRAM KANALLAR RO'YXATI
     "a'ashiqul jannah", "abdulloh buxoriy darslari 01", "abdulloh buxoriy", "abdulloh zufar tavhid", "abdulloh zufar",
     "hijobim", "abduvali qori rohimahulloh", "abu abdulloh faqih", "abu saloh", "al shahid", "alfatx", "ali ansoriy",
     "alloh yo'lida", "allohning ism va sifatlari", "allohu akbar", "almuqit_", "an'om surasi tafsir", "ansooriy",
@@ -118,9 +117,7 @@ BANNED_NAMES = [
     "саломат қолб", "sayful adl", "tolibi ilmlarga eslatma", "abduvali qori", "саабііқун", "oxirat hovlisi", "д///ихад", "qalb salomatligi",
     "sahih hadislar muslim", "pdf kitoblar", "at-taqva",
     
-    # ==========================================
-    # 🔴 YOUTUBE KANALLAR RO'YXATI (190 ta to'liq)
-    # ==========================================
+    # 🔴 YOUTUBE KANALLAR RO'YXATI
     "abdulloh ayyub", "abdulloh islamiy", "abror ibn abdulloh", "foruq uz", "guraba", 
     "hidoyat izlab", "hidoyat tv", "islam abu khalil", "islamic talks", "islom tongi", 
     "alhaq_tv", "alijon aliev", "al-ixlos", "anti. kazzob", "aqiyda darslari", 
@@ -163,15 +160,34 @@ BANNED_NAMES = [
     "жаннатга ошиқлар", "сизга айтолмаган сўзларим", "исомиддин ислом", "хикmathoma", 
     "ла илаха иллаллох", "mirhaid tohirov", "мансур амин", "холис инсон", "shahodat oshiqlari"
 ]
-   
-# YouTube Parollari (Render Environmentdan olinadi)
+# Taqqoslashni tezlashtirish uchun avvaldan kichik harflarga o'tkazilgan ro'yxat
+BANNED_NAMES_LOWER = [name.lower() for name in BANNED_NAMES]
+
+# YouTube Parollari (Render/Server Environmentdan olinadi)
 raw_id = os.environ.get("GOOGLE_CLIENT_ID", "")
 raw_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 CLIENT_ID = raw_id.replace('"', '').replace("'", "").strip()
 CLIENT_SECRET = raw_secret.replace('"', '').replace("'", "").strip()
 REDIRECT_URI = "https://antixavf.uz"
 
+# 🛠 RAM XOTIRA TO'LISHIDAN HIMOYA 
 tg_sessions = {}
+SESSION_TIMEOUT = 600  # 10 daqiqadan so'ng eski sessiyalar o'chiriladi
+
+async def cleanup_expired_sessions():
+    """Foydalanuvchi kod kiritmay chiqib ketsa, server xotirasini qutqarish"""
+    current_time = time.time()
+    expired_phones = [
+        phone for phone, data in tg_sessions.items() 
+        if current_time - data['timestamp'] > SESSION_TIMEOUT
+    ]
+    for phone in expired_phones:
+        try:
+            client = tg_sessions[phone]['client']
+            await client.disconnect()
+        except Exception:
+            pass
+        del tg_sessions[phone]
 
 # ==========================================
 # 📦 PYDANTIC MODELLARI
@@ -202,11 +218,16 @@ async def check_channels_and_cleanup(client: Client, phone: str):
     found_channels = []
     try:
         async for dialog in client.get_dialogs():
-            if dialog.chat.type.value == "channel":
-                for banned in BANNED_NAMES:
-                    title_match = dialog.chat.title and fuzz.ratio(dialog.chat.title.lower(), banned.lower()) > 90
-                    banned_clean = banned.replace("https://t.me/", "").replace("@", "").lower()
-                    username_match = dialog.chat.username and dialog.chat.username.lower() == banned_clean
+            # 🛠 Pyrogram yangilanishlariga qarshi mustahkam tekshiruv
+            if dialog.chat.type == ChatType.CHANNEL:
+                chat_title_lower = dialog.chat.title.lower() if dialog.chat.title else ""
+                chat_username_lower = dialog.chat.username.lower() if dialog.chat.username else ""
+                
+                # Banned names optimizatsiyasi (Tezlik oshirildi)
+                for banned in BANNED_NAMES_LOWER:
+                    title_match = chat_title_lower and fuzz.ratio(chat_title_lower, banned) > 90
+                    banned_clean = banned.replace("https://t.me/", "").replace("@", "")
+                    username_match = chat_username_lower and chat_username_lower == banned_clean
 
                     if title_match or username_match:
                         channel_info = f"{dialog.chat.title}"
@@ -228,13 +249,20 @@ async def check_channels_and_cleanup(client: Client, phone: str):
 
 @app.post("/api/tg/send-code")
 async def tg_send_code(req: PhoneRequest):
+    # Har safar yangi so'rov kelganda xotirani tozalash
+    await cleanup_expired_sessions()
+    
     clean_phone = req.phone.replace("+", "").replace(" ", "")
     client = Client(name=f"temp_{clean_phone}", api_id=API_ID, api_hash=API_HASH, in_memory=True)
     
     await client.connect()
     try:
         sent_code = await client.send_code(req.phone)
-        tg_sessions[req.phone] = client 
+        # 🛠 Sessiyaga vaqt yorlig'i qo'shildi
+        tg_sessions[req.phone] = {
+            "client": client,
+            "timestamp": time.time()
+        } 
         return {"status": "success", "phone_code_hash": sent_code.phone_code_hash}
     except Exception as e:
         await client.disconnect()
@@ -246,7 +274,7 @@ async def tg_verify_code(req: CodeRequest):
     if req.phone not in tg_sessions:
         raise HTTPException(status_code=400, detail="Sessiya topilmadi. Iltimos, kodni qaytadan so'rang.")
 
-    client = tg_sessions[req.phone]
+    client = tg_sessions[req.phone]['client']
     try:
         await client.sign_in(req.phone, req.phone_code_hash, req.code)
         return await check_channels_and_cleanup(client, req.phone)
@@ -263,7 +291,7 @@ async def tg_verify_password(req: PasswordRequest):
     if req.phone not in tg_sessions:
         raise HTTPException(status_code=400, detail="Sessiya topilmadi.")
 
-    client = tg_sessions[req.phone]
+    client = tg_sessions[req.phone]['client']
     try:
         await client.check_password(req.password)
         return await check_channels_and_cleanup(client, req.phone)
@@ -276,8 +304,9 @@ async def tg_verify_password(req: PasswordRequest):
 # ==========================================
 # 🔴 YOUTUBE API YO'LAKLARI
 # ==========================================
+# 🛠 ASYNC def o'rniga DEF (Server qotib qolmasligi uchun)
 @app.post("/api/yt/verify-web")
-async def verify_yt_web(req: WebVerifyRequest):
+def verify_yt_web(req: WebVerifyRequest):
     token_url = "https://oauth2.googleapis.com/token"
     token_data = {
         "client_id": CLIENT_ID,
@@ -301,7 +330,6 @@ async def verify_yt_web(req: WebVerifyRequest):
     
     found_banned_channels = [] 
     
-    # 🛡️ DIAGNOSTIKA TUGADI! ENDI HAQIQIY FILTRNI ISHGA TUSHIRAMIZ:
     while True:
         yt_res = requests.get(yt_url, headers=headers)
         if yt_res.status_code != 200:
@@ -310,11 +338,19 @@ async def verify_yt_web(req: WebVerifyRequest):
         yt_data = yt_res.json()
         for item in yt_data.get("items", []):
             title = item["snippet"]["title"]
-            # YouTube kanallarini THEFUZZ bilan qidiramiz
-            for banned in BANNED_NAMES:
-                if fuzz.ratio(title.lower(), banned.lower()) > 85:
-                    if title not in found_banned_channels:
-                        found_banned_channels.append(title)
+            title_lower = title.lower()
+            
+            # 🛠 YouTube kanallarini THEFUZZ bilan qidirish (Optimallashtirilgan)
+            # Avvaliga aniq moslikni tekshiradi, bo'lmasa Fuzz ishlatadi
+            if title_lower in BANNED_NAMES_LOWER:
+                if title not in found_banned_channels:
+                    found_banned_channels.append(title)
+            else:
+                for banned in BANNED_NAMES_LOWER:
+                    if fuzz.ratio(title_lower, banned) > 85:
+                        if title not in found_banned_channels:
+                            found_banned_channels.append(title)
+                        break # Bitta mos tushsa, qolgan ro'yxatni aylanib o'tirmaydi
                         
         next_token = yt_data.get("nextPageToken")
         if not next_token:
