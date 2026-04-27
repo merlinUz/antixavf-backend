@@ -21,8 +21,8 @@ app.add_middleware(
 # ⚙️ UMUMIY SOZLAMALAR VA PAROLLAR
 # ==========================================
 # Telegram Parollari
-API_ID = 33639561  
-API_HASH = "666f7ed3f66ebfa3b85be8e6ca743dc9" 
+API_ID = 33769072 
+API_HASH = "ecb69f2f2e5511fe1b4a695448094c69" 
 
 # BARCHA TAQIQLANGAN KANALLAR (TELEGRAM + YOUTUBE BIRLASHGAN RO'YXATI)
 # Oliy Sudning 2026-yil 6-aprel holatidagi qarori asosida 100% to'liq ro'yxat
